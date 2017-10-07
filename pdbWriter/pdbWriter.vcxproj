@@ -167,6 +167,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="args.hxx" />
+    <ClInclude Include="csv.h" />
     <ClInclude Include="cvconst.h" />
     <ClInclude Include="cvinfo.h" />
     <ClInclude Include="pdb.h" />

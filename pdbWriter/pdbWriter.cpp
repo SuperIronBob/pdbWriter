@@ -6,6 +6,7 @@
 #include "cvinfo.h"
 
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <locale>
 #include <codecvt>
@@ -13,6 +14,7 @@
 #include <filesystem>
 
 #include "args.hxx"
+#include "csv.h"
 
 #define ARRAYCOUNT(x) (sizeof(x)/sizeof((x)[0]))
 
@@ -114,16 +116,23 @@ typedef CloseObject<CloseHandleCloseTrait<INVALID_HANDLE_VALUE>> FileHandle;
 typedef CloseObject<CloseHandleCloseTrait<nullptr>> FileMappingHandle;
 typedef CloseObject<UnmapFileMappingCloseTrait> ViewOfFileHandle;
 
-std::tuple<wstring> ParseArgs(int argc, char** argv)
+std::tuple<wstring, wstring> ParseArgs(int argc, char** argv)
 {
     args::ArgumentParser parser("Dummy PDB Generator for EXEs based", "");
     args::HelpFlag help(parser, "help", "Display this help menu", { 'h', "help" });
-    args::Positional<std::string> path(parser, "Executable Path", "Path for executable for PDB generation");
+    args::Positional<std::string> exePath(parser, "Executable Path", "Path for executable for PDB generation");
+    args::Positional<std::string> symbolsPath(parser, "Symbols Path", "Path for a text file with symbols and addresses");
+
     try
     {
         parser.ParseCLI(argc, argv);
 
-        if (!path)
+        if (!exePath)
+        {
+            throw args::Help("");
+        }
+
+        if (!symbolsPath)
         {
             throw args::Help("");
         }
@@ -146,11 +155,12 @@ std::tuple<wstring> ParseArgs(int argc, char** argv)
         exit(1);
     }
 
-    // convert the path to a wstring
+    // convert the paths to a wstring
     wstring_convert<codecvt<wchar_t, char, mbstate_t>> converter;
-    wstring widePath = converter.from_bytes(path.Get());
+    wstring wideExePath = converter.from_bytes(exePath.Get());
+    wstring wideSymbolsPath = converter.from_bytes(symbolsPath.Get());
 
-    return make_tuple(widePath);
+    return make_tuple(wideExePath, wideSymbolsPath);
 }
 
 struct SegmentData
@@ -239,7 +249,7 @@ ExeMetadata ReadExeMetadata(const wstring& exePath)
     return metadata;
 }
 
-void AddSymbol(const ExeMetadata& metadata, Mod* mod, const wstring& symbolName, DWORD symbolAddress, CV_pubsymflag_t flags)
+void AddSymbol(const ExeMetadata& metadata, Mod* mod, const string& symbolName, DWORD symbolAddress, CV_pubsymflag_t flags)
 {
     bool foundSymbol = false;
     int segmentId = 1;
@@ -257,19 +267,20 @@ void AddSymbol(const ExeMetadata& metadata, Mod* mod, const wstring& symbolName,
 
     if (foundSymbol)
     {
-        mod->AddPublicW(symbolName.c_str(), segmentId, offset, flags);
+        mod->AddPublic2(symbolName.c_str(), segmentId, offset, flags);
     }
     else
     {
-        cerr << L"Unable to find segment for " << symbolName.c_str() << L" with address " << symbolAddress << endl;
+        cerr << L"Unable to find segment for " << symbolName << L" with address " << symbolAddress << endl;
     }
 }
 
 int main(int argc, char** argv)
 {
     wstring exePath;
+    wstring symbolPath;
 
-    std::tie(exePath) = ParseArgs(argc, argv);
+    std::tie(exePath, symbolPath) = ParseArgs(argc, argv);
 
     ExeMetadata metadata;
     try
@@ -282,6 +293,14 @@ int main(int argc, char** argv)
         exit(1);
     }
 
+    ifstream symbolsFile;
+    symbolsFile.open(symbolPath);
+    if ((symbolsFile.rdstate() & ifstream::failbit) != 0)
+    {
+        wcerr << L"Error opening symbols file" << endl;
+        exit(1);
+    }
+
     {
         EC errorCode;
         wchar_t buffer[1024];
@@ -289,7 +308,7 @@ int main(int argc, char** argv)
         wstring pdbName = metadata.exeName + L".pdb";
 
         ClosePtr<PDB> pdb;
-        PDBOpen2W(pdbName.c_str(), pdbWrite, &errorCode, buffer, sizeof(buffer) / sizeof(buffer[0]), &pdb);
+        PDBOpen2W(pdbName.c_str(), pdbWrite, &errorCode, buffer, ARRAYSIZE(buffer), &pdb);
         {
             ClosePtr<DBI> dbi;
             pdb->OpenDBI("", pdbWrite, &dbi);
@@ -304,9 +323,13 @@ int main(int argc, char** argv)
             ClosePtr<Mod> mod;
             dbi->OpenModW(L"__Globals", L"__Globals", &mod);
 
-            wstring symbolName(L"vector_stride8Bytes__reserve");
-            DWORD symbolAddress = 0x4B3B80;
-            AddSymbol(metadata, mod, symbolName, symbolAddress, cvpsfFunction);
+
+            csv<string, DWORD> symbols(symbolsFile, ',');
+
+            for (auto row : symbols)
+            {
+                AddSymbol(metadata, mod, get<0>(row), get<1>(row), cvpsfFunction);
+            }
         }
 
         pdb->Commit();
