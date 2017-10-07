@@ -271,7 +271,7 @@ void AddSymbol(const ExeMetadata& metadata, Mod* mod, const string& symbolName, 
     }
     else
     {
-        cerr << L"Unable to find segment for " << symbolName << L" with address " << symbolAddress << endl;
+        cerr << "Unable to find segment for " << symbolName << " with address " << symbolAddress << endl;
     }
 }
 
