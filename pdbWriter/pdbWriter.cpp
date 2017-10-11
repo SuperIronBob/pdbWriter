@@ -249,25 +249,42 @@ ExeMetadata ReadExeMetadata(const wstring& exePath)
     return metadata;
 }
 
-void AddSymbol(const ExeMetadata& metadata, Mod* mod, const string& symbolName, DWORD symbolAddress, CV_pubsymflag_t flags)
+struct SymbolOffset
+{
+    int segmentId;
+    DWORD offset;
+};
+
+tuple<bool, SymbolOffset> FindModuleForSymbol(const ExeMetadata& metadata, DWORD symbolAddress)
 {
     bool foundSymbol = false;
-    int segmentId = 1;
-    DWORD offset = 0;
+    SymbolOffset offset;
+
+    offset.segmentId = 1;
+    offset.offset = 0;
     for (auto segment : metadata.segments)
     {
-        offset = symbolAddress - segment.baseAddress;
-        if (offset < segment.size)
+        offset.offset = symbolAddress - segment.baseAddress;
+        if (offset.offset < segment.size)
         {
             foundSymbol = true;
             break;
         }
-        segmentId++;
+        offset.segmentId++;
     }
+
+    return make_tuple(foundSymbol, offset);
+}
+
+void AddSymbol(const ExeMetadata& metadata, Mod* mod, const string& symbolName, DWORD symbolAddress, CV_pubsymflag_t flags)
+{
+    bool foundSymbol = false;
+    SymbolOffset offset;
+    tie(foundSymbol, offset) = FindModuleForSymbol(metadata, symbolAddress);
 
     if (foundSymbol)
     {
-        mod->AddPublic2(symbolName.c_str(), segmentId, offset, flags);
+        mod->AddPublic2(symbolName.c_str(), offset.segmentId, offset.offset, flags);
     }
     else
     {
@@ -313,6 +330,9 @@ int main(int argc, char** argv)
             ClosePtr<DBI> dbi;
             pdb->OpenDBI("", pdbWrite, &dbi);
 
+            ClosePtr<Mod> mod;
+            dbi->OpenModW(L"__Globals", L"__Globals", &mod);
+
             int segmentId = 1;
             for (auto segment : metadata.segments)
             {
@@ -320,15 +340,23 @@ int main(int argc, char** argv)
                 segmentId++;
             }
 
-            ClosePtr<Mod> mod;
-            dbi->OpenModW(L"__Globals", L"__Globals", &mod);
 
-
-            csv<string, DWORD> symbols(symbolsFile, ',');
+            csv<char, string, DWORD> symbols(symbolsFile, ',');
 
             for (auto row : symbols)
             {
-                AddSymbol(metadata, mod, get<0>(row), get<1>(row), cvpsfFunction);
+                switch (get<0>(row))
+                {
+                case 'S':
+                    AddSymbol(metadata, mod, get<1>(row), get<2>(row), cvpsfFunction);
+                    break;
+                case 'N':
+                    AddSymbol(metadata, mod, get<1>(row), get<2>(row), 0);
+                    break;
+                default:
+                    cerr << "unknown symbol kind encountered: " << get<0>(row) << ',' << get<1>(row) << ',' << get<2>(row) << endl;
+                    break;
+                }
             }
         }
 
